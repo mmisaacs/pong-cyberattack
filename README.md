@@ -14,3 +14,10 @@ in an additional terminal, please run the following commands simultaneously.
 cd backend
 npm run dev
 ```
+
+# Contributors
+### [Maddie Isaacs](https://github.com/mmisaacs)
+Cal Poly Pomona's sheCodes President / Project Lead
+
+### [Annabel Wen](https://github.com/whyoho)
+Cal Poly Pomona's sheCodes Science Council Representative / Developer
