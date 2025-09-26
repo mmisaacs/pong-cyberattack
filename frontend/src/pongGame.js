@@ -1,207 +1,157 @@
-export default function startPong() {
-    const canvas = document.getElementById("pongGame");
+// frontend/src/pongGame.js
+export default function startPong(player = 'A') {
+    const canvas = document.getElementById('pongGame');
     if (!canvas) return () => {};
 
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext('2d');
 
-    // Use a logical game size and scale for crisp rendering
-    const LOGICAL_WIDTH = 650;
-    const LOGICAL_HEIGHT = 400;
+    // Logical size (should match backend WIDTH/HEIGHT)
+    const WIDTH = 650;
+    const HEIGHT = 400;
 
-    // Fit the logical size into whatever the React canvas currently is
-    // (We’ll use CSS size for layout and scale the drawing for HiDPI)
+    // HiDPI scaling
     const dpr = window.devicePixelRatio || 1;
-    canvas.style.width = LOGICAL_WIDTH + "px";
-    canvas.style.height = LOGICAL_HEIGHT + "px";
-    canvas.width = Math.floor(LOGICAL_WIDTH * dpr);
-    canvas.height = Math.floor(LOGICAL_HEIGHT * dpr);
+    canvas.style.width = WIDTH + 'px';
+    canvas.style.height = HEIGHT + 'px';
+    canvas.width = Math.floor(WIDTH * dpr);
+    canvas.height = Math.floor(HEIGHT * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Simple helper
-    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-
-    class Element {
-        constructor(options) {
-            this.x = options.x;
-            this.y = options.y;
-            this.width = options.width;
-            this.height = options.height;
-            this.color = options.color || "#fff";
-            this.speed = options.speed ?? 2;
-            this.gravity = options.gravity ?? 0;
-        }
-    }
-
-    let scoreOne = 0;
-    let scoreTwo = 0;
-
-    const paddleW = 12;
-    const paddleH = 80;
-    const margin = 10;
-
-    const playerOne = new Element({
-        x: margin,
-        y: (LOGICAL_HEIGHT - paddleH) / 2,
-        width: paddleW,
-        height: paddleH,
-        color: "#fff",
-        speed: 6
-    });
-
-    const playerTwo = new Element({
-        x: LOGICAL_WIDTH - margin - paddleW, // inside the right edge
-        y: (LOGICAL_HEIGHT - paddleH) / 2,
-        width: paddleW,
-        height: paddleH,
-        color: "#fff",
-        speed: 6
-    });
-
-    const ballSize = 12;
-    const ball = new Element({
-        x: LOGICAL_WIDTH / 2 - ballSize / 2,
-        y: LOGICAL_HEIGHT / 2 - ballSize / 2,
-        width: ballSize,
-        height: ballSize,
-        color: "#20C20E",
-        speed: 4
-    });
-
-    let vx = Math.random() < 0.5 ? -ball.speed : ball.speed;
-    let vy = (Math.random() * 2 - 1) * ball.speed * 0.6;
-
-    function resetBall(direction = 1) {
-        ball.x = LOGICAL_WIDTH / 2 - ball.width / 2;
-        ball.y = LOGICAL_HEIGHT / 2 - ball.height / 2;
-        ball.speed = 4;
-        vx = direction * ball.speed;
-        vy = (Math.random() * 2 - 1) * ball.speed * 0.8;
-    }
-
-    // Input
-    const keys = { w: false, s: false, ArrowUp: false, ArrowDown: false };
+    // --- Input handling (intent flags the backend will consume) ---
+    const keys = new Set();
     const onKeyDown = (e) => {
-        if (e.key in keys) keys[e.key] = true;
+        if (e.key === 'w' || e.key === 's') { keys.add(e.key); sendInput(); }
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { keys.add(e.key); sendInput(); }
     };
     const onKeyUp = (e) => {
-        if (e.key in keys) keys[e.key] = false;
+        if (keys.has(e.key)) { keys.delete(e.key); sendInput(); }
     };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
 
-    // Draw helpers
-    function drawRect(x, y, w, h, color = "#fff") {
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, w, h);
+    // --- WebSocket connection to backend (/ws is proxied by Vite in dev) ---
+    const wsUrl = (location.origin.replace(/^http/, 'ws')) + '/ws';
+    let ws;
+    let reconnectTimer = null;
+    let lastSent = 0;
+
+    function connect() {
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            // Send initial input (so server knows our idle state)
+            sendInput(true);
+        };
+        ws.onclose = () => {
+            // Try to reconnect with a small backoff
+            if (!reconnectTimer) {
+                reconnectTimer = setTimeout(() => {
+                    reconnectTimer = null;
+                    connect();
+                }, 800);
+            }
+        };
+        ws.onmessage = (ev) => {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'state') {
+                    // Update render state from server
+                    onServerState(msg);
+                }
+            } catch {}
+        };
+    }
+    connect();
+
+    // --- Client-side render state (driven by server messages) ---
+    const renderState = {
+        seq: 0,
+        ts: 0,
+        ball: { x: WIDTH/2, y: HEIGHT/2, w: 10, h: 10 },
+        paddles: { A: { y: HEIGHT/2 - 30, h: 60 }, B: { y: HEIGHT/2 - 30, h: 60 } },
+        scores: { A: 0, B: 0 }
+    };
+
+    function onServerState(s) {
+        // Ignore stale frames
+        if (typeof s.seq === 'number' && s.seq < renderState.seq) return;
+
+        renderState.seq = s.seq ?? renderState.seq + 1;
+        renderState.ts = s.ts ?? Date.now();
+
+        if (s.ball) {
+            // Server sends absolute pixel coords
+            renderState.ball.x = s.ball.x;
+            renderState.ball.y = s.ball.y;
+            renderState.ball.w = s.ball.w ?? renderState.ball.w;
+            renderState.ball.h = s.ball.h ?? renderState.ball.h;
+        }
+        if (s.paddles?.A) {
+            renderState.paddles.A.y = s.paddles.A.y;
+            renderState.paddles.A.h = s.paddles.A.h ?? renderState.paddles.A.h;
+        }
+        if (s.paddles?.B) {
+            renderState.paddles.B.y = s.paddles.B.y;
+            renderState.paddles.B.h = s.paddles.B.h ?? renderState.paddles.B.h;
+        }
+        if (s.scores) {
+            renderState.scores.A = s.scores.A ?? renderState.scores.A;
+            renderState.scores.B = s.scores.B ?? renderState.scores.B;
+        }
     }
 
+    // --- Send paddle intent to server (throttled) ---
+    function sendInput(force = false) {
+        const now = Date.now();
+        if (!ws || ws.readyState !== 1) return;
+        if (!force && now - lastSent < 50) return; // ~20 msgs/sec max
+        lastSent = now;
+
+        // Map keys to our local player's intent. Default: 'A'
+        const up = keys.has('w') || keys.has('ArrowUp');
+        const down = keys.has('s') || keys.has('ArrowDown');
+
+        ws.send(JSON.stringify({
+            type: 'paddle_move',
+            player,
+            up, down
+        }));
+    }
+
+    // --- Drawing helpers (purely visual; no physics here!) ---
     function drawNet() {
-        const dashH = 10;
-        for (let y = 0; y < LOGICAL_HEIGHT; y += dashH * 2) {
-            drawRect(LOGICAL_WIDTH / 2 - 1, y, 2, dashH, "#555");
+        ctx.fillStyle = '#555';
+        const dashH = 10, gap = 8;
+        for (let y = 0; y < HEIGHT; y += dashH + gap) {
+            ctx.fillRect(WIDTH / 2 - 1, y, 2, dashH);
         }
     }
-
     function drawScores() {
-        ctx.fillStyle = "#fff";
-        ctx.font = "24px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(String(scoreOne), LOGICAL_WIDTH / 2 - 40, 40);
-        ctx.fillText(String(scoreTwo), LOGICAL_WIDTH / 2 + 40, 40);
+        ctx.fillStyle = '#fff';
+        ctx.font = '24px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(renderState.scores.A ?? 0), WIDTH / 2 - 40, 40);
+        ctx.fillText(String(renderState.scores.B ?? 0), WIDTH / 2 + 40, 40);
     }
-
-    function aabb(a, b) {
-        return (
-            a.x < b.x + b.width &&
-            a.x + a.width > b.x &&
-            a.y < b.y + b.height &&
-            a.y + a.height > b.y
-        );
-    }
-
-    // AI for playerTwo (simple: follow the ball with a cap)
-    function updateAI() {
-        const centerY = playerTwo.y + playerTwo.height / 2;
-        if (ball.y + ball.height / 2 < centerY - 8) {
-            playerTwo.y -= playerTwo.speed * 0.9;
-        } else if (ball.y + ball.height / 2 > centerY + 8) {
-            playerTwo.y += playerTwo.speed * 0.9;
-        }
-        playerTwo.y = clamp(playerTwo.y, 0, LOGICAL_HEIGHT - playerTwo.height);
-    }
-
-    let raf = null;
-    function loop() {
-        // Update
-        if (keys.w) playerOne.y -= playerOne.speed;
-        if (keys.s) playerOne.y += playerOne.speed;
-        playerOne.y = clamp(playerOne.y, 0, LOGICAL_HEIGHT - playerOne.height);
-
-        // Optional: let Arrow keys control right paddle instead of AI
-        if (keys.ArrowUp || keys.ArrowDown) {
-            if (keys.ArrowUp) playerTwo.y -= playerTwo.speed;
-            if (keys.ArrowDown) playerTwo.y += playerTwo.speed;
-            playerTwo.y = clamp(playerTwo.y, 0, LOGICAL_HEIGHT - playerTwo.height);
-        } else {
-            updateAI();
-        }
-
-        // Ball movement
-        ball.x += vx;
-        ball.y += vy;
-
-        // Top/bottom walls
-        if (ball.y <= 0) {
-            ball.y = 0;
-            vy = -vy;
-        } else if (ball.y + ball.height >= LOGICAL_HEIGHT) {
-            ball.y = LOGICAL_HEIGHT - ball.height;
-            vy = -vy;
-        }
-
-        // Paddle collisions
-        if (aabb(ball, playerOne)) {
-            ball.x = playerOne.x + playerOne.width; // prevent sticking
-            vx = Math.abs(vx) * 1.05; // bounce right, speed up a bit
-            // add a little angle based on where it hit the paddle
-            const hit = (ball.y + ball.height / 2) - (playerOne.y + playerOne.height / 2);
-            vy = hit * 0.15;
-        } else if (aabb(ball, playerTwo)) {
-            ball.x = playerTwo.x - ball.width;
-            vx = -Math.abs(vx) * 1.05; // bounce left, speed up a bit
-            const hit = (ball.y + ball.height / 2) - (playerTwo.y + playerTwo.height / 2);
-            vy = hit * 0.15;
-        }
-
-        // Scoring
-        if (ball.x + ball.width < 0) {
-            scoreTwo += 1;
-            resetBall(1);
-        } else if (ball.x > LOGICAL_WIDTH) {
-            scoreOne += 1;
-            resetBall(-1);
-        }
-
-        // Render
-        ctx.clearRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+    function draw() {
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
         drawNet();
         drawScores();
-        drawRect(playerOne.x, playerOne.y, playerOne.width, playerOne.height, playerOne.color);
-        drawRect(playerTwo.x, playerTwo.y, playerTwo.width, playerTwo.height, playerTwo.color);
-        drawRect(ball.x, ball.y, ball.width, ball.height, ball.color);
-
-        raf = requestAnimationFrame(loop);
+        // paddles
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(10, renderState.paddles.A.y, 10, renderState.paddles.A.h);
+        ctx.fillRect(WIDTH - 20, renderState.paddles.B.y, 10, renderState.paddles.B.h);
+        // ball
+        ctx.fillStyle = '#20C20E';
+        ctx.fillRect(renderState.ball.x, renderState.ball.y, renderState.ball.w, renderState.ball.h);
+        requestAnimationFrame(draw);
     }
+    requestAnimationFrame(draw);
 
-    // Kick off
-    resetBall(Math.random() < 0.5 ? -1 : 1);
-    loop();
-
-    // Cleanup on unmount / hot reload
+    // --- Cleanup on unmount / HMR ---
     return function cleanup() {
-        if (raf) cancelAnimationFrame(raf);
-        window.removeEventListener("keydown", onKeyDown);
-        window.removeEventListener("keyup", onKeyUp);
+        window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('keyup', onKeyUp);
+        try { ws && ws.close(); } catch {}
+        if (reconnectTimer) clearTimeout(reconnectTimer);
     };
 }
-
