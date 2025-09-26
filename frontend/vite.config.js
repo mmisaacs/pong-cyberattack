@@ -6,12 +6,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // forward REST calls
+      // forward REST calls (backend uses PORT=5000 in backend/.env)
       '/api': {
         target: 'http://localhost:5001',
         changeOrigin: true
       },
-      // forward WebSocket calls
+      // forward WebSocket calls to backend WebSocket server
       '/ws': {
         target: 'ws://localhost:5001',
         ws: true

@@ -1,0 +1,21 @@
+{
+  "name": "pong-cyberattack",
+  "version": "1.0.0",
+  "description": "Beginner friendly demostration to cyberattacks for Cal Poly Pomona's CSAF 2025",
+  "main": "index.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mmisaacs/pong-cyberattack.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mmisaacs/pong-cyberattack/issues"
+  },
+  "homepage": "https://github.com/mmisaacs/pong-cyberattack#readme"
+}

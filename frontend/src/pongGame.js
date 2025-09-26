@@ -1,21 +1,25 @@
 // frontend/src/pongGame.js
-export default function startPong(player = 'A') {
+export default function startPong(player = 'A', onUpdate = () => {}) {
+    // Attempt to use the canvas if present; otherwise run headless (dashboard-only)
     const canvas = document.getElementById('pongGame');
-    if (!canvas) return () => {};
-
-    const ctx = canvas.getContext('2d');
+    const hasCanvas = !!canvas;
+    let ctx = null;
 
     // Logical size (should match backend WIDTH/HEIGHT)
     const WIDTH = 650;
     const HEIGHT = 400;
 
-    // HiDPI scaling
-    const dpr = window.devicePixelRatio || 1;
-    canvas.style.width = WIDTH + 'px';
-    canvas.style.height = HEIGHT + 'px';
-    canvas.width = Math.floor(WIDTH * dpr);
-    canvas.height = Math.floor(HEIGHT * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (hasCanvas) {
+        ctx = canvas.getContext('2d');
+
+        // HiDPI scaling
+        const dpr = window.devicePixelRatio || 1;
+        canvas.style.width = WIDTH + 'px';
+        canvas.style.height = HEIGHT + 'px';
+        canvas.width = Math.floor(WIDTH * dpr);
+        canvas.height = Math.floor(HEIGHT * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
 
     // --- Input handling (intent flags the backend will consume) ---
     const keys = new Set();
@@ -56,6 +60,9 @@ export default function startPong(player = 'A') {
                 if (msg.type === 'state') {
                     // Update render state from server
                     onServerState(msg);
+                } else if (msg.type === 'attack' || msg.type === 'alert') {
+                    // Forward alerts/events to the host app
+                    try { onUpdate({ type: 'event', event: msg }); } catch {}
                 }
             } catch {}
         };
@@ -97,6 +104,8 @@ export default function startPong(player = 'A') {
             renderState.scores.A = s.scores.A ?? renderState.scores.A;
             renderState.scores.B = s.scores.B ?? renderState.scores.B;
         }
+        // Notify host app of updated state
+        try { onUpdate({ type: 'state', state: JSON.parse(JSON.stringify(renderState)) }); } catch {}
     }
 
     // --- Send paddle intent to server (throttled) ---
@@ -133,6 +142,7 @@ export default function startPong(player = 'A') {
         ctx.fillText(String(renderState.scores.B ?? 0), WIDTH / 2 + 40, 40);
     }
     function draw() {
+        if (!ctx) return;
         ctx.clearRect(0, 0, WIDTH, HEIGHT);
         drawNet();
         drawScores();
@@ -143,9 +153,11 @@ export default function startPong(player = 'A') {
         // ball
         ctx.fillStyle = '#20C20E';
         ctx.fillRect(renderState.ball.x, renderState.ball.y, renderState.ball.w, renderState.ball.h);
+        // Provide a lightweight state update for the dashboard (throttled by requestAnimationFrame)
+        try { onUpdate({ type: 'state', state: JSON.parse(JSON.stringify(renderState)) }); } catch {}
         requestAnimationFrame(draw);
     }
-    requestAnimationFrame(draw);
+    if (ctx) requestAnimationFrame(draw);
 
     // --- Cleanup on unmount / HMR ---
     return function cleanup() {
