@@ -1,18 +1,16 @@
 // frontend/src/pongGame.js
-export default function startPong(player = 'A', onUpdate = () => {}) {
+export default function startPong(player = 'both', onUpdate = () => {}) {
     // Attempt to use the canvas if present; otherwise run headless (dashboard-only)
     const canvas = document.getElementById('pongGame');
     const hasCanvas = !!canvas;
     let ctx = null;
 
-    // Logical size (should match backend WIDTH/HEIGHT)
+    // Logical size (must match backend)
     const WIDTH = 650;
     const HEIGHT = 400;
 
     if (hasCanvas) {
         ctx = canvas.getContext('2d');
-
-        // HiDPI scaling
         const dpr = window.devicePixelRatio || 1;
         canvas.style.width = WIDTH + 'px';
         canvas.style.height = HEIGHT + 'px';
@@ -21,47 +19,59 @@ export default function startPong(player = 'A', onUpdate = () => {}) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    // --- Input handling (intent flags the backend will consume) ---
-    const keys = new Set();
-    const onKeyDown = (e) => {
-        if (e.key === 'w' || e.key === 's') { keys.add(e.key); sendInput(); }
-        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { keys.add(e.key); sendInput(); }
+    // --- Input handling (A = W/S, B = ArrowUp/ArrowDown) ---
+    const intent = {
+        A: { up: false, down: false },
+        B: { up: false, down: false }
     };
-    const onKeyUp = (e) => {
-        if (keys.has(e.key)) { keys.delete(e.key); sendInput(); }
-    };
+
+    const keysOfInterest = new Set(['w', 's', 'ArrowUp', 'ArrowDown']);
+
+    function setKey(isDown, key) {
+        if (!keysOfInterest.has(key)) return;
+
+        if (key === 'w') intent.A.up = isDown;
+        if (key === 's') intent.A.down = isDown;
+        if (key === 'ArrowUp') intent.B.up = isDown;
+        if (key === 'ArrowDown') intent.B.down = isDown;
+
+        sendInput(); // push changes
+    }
+
+    const onKeyDown = (e) => { if (!e.repeat) setKey(true, e.key); };
+    const onKeyUp   = (e) => { setKey(false, e.key); };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // --- WebSocket connection to backend (/ws is proxied by Vite in dev) ---
+    // --- WebSocket connection (/ws proxied by Vite in dev) ---
     const wsUrl = (location.origin.replace(/^http/, 'ws')) + '/ws';
     let ws;
     let reconnectTimer = null;
-    let lastSent = 0;
+    let lastSentAt = 0;
+    // track last sent per paddle to avoid resending identical states
+    let lastA = { up: false, down: false };
+    let lastB = { up: false, down: false };
 
     function connect() {
         ws = new WebSocket(wsUrl);
+
         ws.onopen = () => {
-            // Send initial input (so server knows our idle state)
+            // Send initial neutral state for whichever side(s) this client controls
             sendInput(true);
         };
+
         ws.onclose = () => {
-            // Try to reconnect with a small backoff
             if (!reconnectTimer) {
-                reconnectTimer = setTimeout(() => {
-                    reconnectTimer = null;
-                    connect();
-                }, 800);
+                reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 800);
             }
         };
+
         ws.onmessage = (ev) => {
             try {
                 const msg = JSON.parse(ev.data);
-                if (msg.type === 'state') {
-                    // Update render state from server
-                    onServerState(msg);
-                } else if (msg.type === 'attack' || msg.type === 'alert') {
-                    // Forward alerts/events to the host app
+                if (msg.type === 'state') onServerState(msg);
+                else if (msg.type === 'attack' || msg.type === 'alert') {
                     try { onUpdate({ type: 'event', event: msg }); } catch {}
                 }
             } catch {}
@@ -69,65 +79,50 @@ export default function startPong(player = 'A', onUpdate = () => {}) {
     }
     connect();
 
-    // --- Client-side render state (driven by server messages) ---
+    // --- Render state from server ---
     const renderState = {
-        seq: 0,
-        ts: 0,
+        seq: 0, ts: 0,
         ball: { x: WIDTH/2, y: HEIGHT/2, w: 10, h: 10 },
         paddles: { A: { y: HEIGHT/2 - 30, h: 60 }, B: { y: HEIGHT/2 - 30, h: 60 } },
         scores: { A: 0, B: 0 }
     };
 
     function onServerState(s) {
-        // Ignore stale frames
-        if (typeof s.seq === 'number' && s.seq < renderState.seq) return;
-
+        if (typeof s.seq === 'number' && s.seq < renderState.seq) return; // ignore stale/replay
         renderState.seq = s.seq ?? renderState.seq + 1;
-        renderState.ts = s.ts ?? Date.now();
+        renderState.ts  = s.ts  ?? Date.now();
 
-        if (s.ball) {
-            // Server sends absolute pixel coords
-            renderState.ball.x = s.ball.x;
-            renderState.ball.y = s.ball.y;
-            renderState.ball.w = s.ball.w ?? renderState.ball.w;
-            renderState.ball.h = s.ball.h ?? renderState.ball.h;
-        }
-        if (s.paddles?.A) {
-            renderState.paddles.A.y = s.paddles.A.y;
-            renderState.paddles.A.h = s.paddles.A.h ?? renderState.paddles.A.h;
-        }
-        if (s.paddles?.B) {
-            renderState.paddles.B.y = s.paddles.B.y;
-            renderState.paddles.B.h = s.paddles.B.h ?? renderState.paddles.B.h;
-        }
-        if (s.scores) {
-            renderState.scores.A = s.scores.A ?? renderState.scores.A;
-            renderState.scores.B = s.scores.B ?? renderState.scores.B;
-        }
-        // Notify host app of updated state
+        if (s.ball)       Object.assign(renderState.ball, s.ball);
+        if (s.paddles?.A) Object.assign(renderState.paddles.A, s.paddles.A);
+        if (s.paddles?.B) Object.assign(renderState.paddles.B, s.paddles.B);
+        if (s.scores)     Object.assign(renderState.scores, s.scores);
+
         try { onUpdate({ type: 'state', state: JSON.parse(JSON.stringify(renderState)) }); } catch {}
     }
 
-    // --- Send paddle intent to server (throttled) ---
+    // --- Send inputs (separate messages for A and B, throttled & deduped) ---
+    function controlsAEnabled() { return player === 'A' || player === 'both' || player === 'Both'; }
+    function controlsBEnabled() { return player === 'B' || player === 'both' || player === 'Both'; }
+
     function sendInput(force = false) {
-        const now = Date.now();
         if (!ws || ws.readyState !== 1) return;
-        if (!force && now - lastSent < 50) return; // ~20 msgs/sec max
-        lastSent = now;
+        const now = Date.now();
+        if (!force && now - lastSentAt < 40) return; // cap ~25 msgs/sec total
+        lastSentAt = now;
 
-        // Map keys to our local player's intent. Default: 'A'
-        const up = keys.has('w') || keys.has('ArrowUp');
-        const down = keys.has('s') || keys.has('ArrowDown');
-
-        ws.send(JSON.stringify({
-            type: 'paddle_move',
-            player,
-            up, down
-        }));
+        if (controlsAEnabled() && (force || intent.A.up !== lastA.up || intent.A.down !== lastA.down)) {
+            ws.send(JSON.stringify({ type: 'paddle_move', player: 'A', up: intent.A.up, down: intent.A.down }));
+            lastA = { ...intent.A };
+        }
+        if (controlsBEnabled() && (force || intent.B.up !== lastB.up || intent.B.down !== lastB.down)) {
+            ws.send(JSON.stringify({ type: 'paddle_move', player: 'B', up: intent.B.up, down: intent.B.down }));
+            lastB = { ...intent.B };
+        }
     }
 
-    // --- Drawing helpers (purely visual; no physics here!) ---
+    // --- Drawing ---
     function drawNet() {
+        if (!ctx) return;
         ctx.fillStyle = '#555';
         const dashH = 10, gap = 8;
         for (let y = 0; y < HEIGHT; y += dashH + gap) {
@@ -135,6 +130,7 @@ export default function startPong(player = 'A', onUpdate = () => {}) {
         }
     }
     function drawScores() {
+        if (!ctx) return;
         ctx.fillStyle = '#fff';
         ctx.font = '24px monospace';
         ctx.textAlign = 'center';
@@ -142,24 +138,26 @@ export default function startPong(player = 'A', onUpdate = () => {}) {
         ctx.fillText(String(renderState.scores.B ?? 0), WIDTH / 2 + 40, 40);
     }
     function draw() {
-        if (!ctx) return;
+        if (!ctx) return requestAnimationFrame(draw);
         ctx.clearRect(0, 0, WIDTH, HEIGHT);
-        drawNet();
-        drawScores();
-        // paddles
+        drawNet(); drawScores();
+
+        // paddles (A left, B right)
         ctx.fillStyle = '#fff';
-        ctx.fillRect(10, renderState.paddles.A.y, 10, renderState.paddles.A.h);
-        ctx.fillRect(WIDTH - 20, renderState.paddles.B.y, 10, renderState.paddles.B.h);
+        ctx.fillRect(10,             renderState.paddles.A.y, 10, renderState.paddles.A.h);
+        ctx.fillRect(WIDTH - 20,     renderState.paddles.B.y, 10, renderState.paddles.B.h);
+
         // ball
         ctx.fillStyle = '#20C20E';
         ctx.fillRect(renderState.ball.x, renderState.ball.y, renderState.ball.w, renderState.ball.h);
-        // Provide a lightweight state update for the dashboard (throttled by requestAnimationFrame)
+
+        // optional: push state to host each frame
         try { onUpdate({ type: 'state', state: JSON.parse(JSON.stringify(renderState)) }); } catch {}
         requestAnimationFrame(draw);
     }
     if (ctx) requestAnimationFrame(draw);
 
-    // --- Cleanup on unmount / HMR ---
+    // --- Cleanup ---
     return function cleanup() {
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('keyup', onKeyUp);
