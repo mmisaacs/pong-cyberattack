@@ -38,12 +38,12 @@ export default function App(){
 
     return (
         <div>
-            <nav style={{ marginBottom: 12 }}>
+            {/*<nav style={{ marginBottom: 12 }}>
                 <button onClick={() => navigate('/')} disabled={path === '/'}>Game</button>
                 <button onClick={() => navigate('/dashboard')} disabled={path === '/dashboard'} style={{ marginLeft: 8 }}>
                     Dashboard
                 </button>
-            </nav>
+            </nav>*/}
 
             {path === '/' && (
                 <canvas id="pongGame" width="650" height="400" style={{ background:'#000' }} />
