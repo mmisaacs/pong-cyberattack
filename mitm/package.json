@@ -1,0 +1,18 @@
+{
+  "name": "mitm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node mitm-ws.js --listen=8080 --target=ws://localhost:5001 --logfile=mitm_log.jsonl"
+  },
+  "dependencies": {
+    "minimist": "^1.2.8",
+    "ws": "^8.18.3"
+  },
+  "version": "1.0.0",
+  "main": "mitm-ws.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
